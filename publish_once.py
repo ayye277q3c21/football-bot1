@@ -133,8 +133,7 @@ def clean_summary(raw: str) -> str:
 def build_caption(title: str, summary: str, link: str, hashtags: str = '') -> str:
     head = f'❗️ <b>{html.escape(title[:200])}</b>'
     tags = f'\n\n{html.escape(hashtags)}' if hashtags else ''
-    source = f'\n\n<a href="{html.escape(link, quote=True)}">Источник</a>'
-    tail = tags + source + FOOTER
+    tail = tags + FOOTER
 
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', summary) if s.strip()]
     lead = sentences[0] if sentences else ''
