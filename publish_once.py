@@ -130,21 +130,128 @@ def clean_summary(raw: str) -> str:
     return ' '.join(text.split())
 
 
-def build_caption(title: str, summary: str, link: str, hashtags: str = '') -> str:
-    head = f'❗️ <b>{html.escape(title[:200])}</b>'
-    tags = f'\n\n{html.escape(hashtags)}' if hashtags else ''
+# ---------------------------------------------------------------------------
+# Post templates
+# Checked top to bottom; the first match wins. No match = 'regular'.
+# 'patterns' are regex word beginnings (same rules as topic keywords).
+# 'header' goes above the title, 'lead'/'rest' are emoji before the two text blocks.
+# 'tags' = whether to show topic hashtags.
+# ---------------------------------------------------------------------------
+TEMPLATES: list[dict] = [
+    {
+        'name': 'mourning',
+        'patterns': ['скончал', 'умер', r'смерт', r'погиб', 'траур', 'минутой молчания', 'соболезнован'],
+        'header': '🕯',
+        'title_prefix': '',
+        'lead': '',
+        'rest': '',
+        'tags': False,
+    },
+    {
+        'name': 'breaking',
+        'patterns': ['срочно', 'молния', 'сенсаци', r'экстренн'],
+        'header': '🚨 <b>СРОЧНО</b>',
+        'title_prefix': '',
+        'lead': '⚡️',
+        'rest': '📝',
+        'tags': True,
+    },
+    {
+        'name': 'coach',
+        'patterns': [r'(?:отставк|уволен|уволил|покину|покидает|расторг).{0,60}тренер',
+                     r'тренер.{0,60}(?:отставк|уволен|покину|покидает|расторг)',
+                     r'назначен\w* главн', r'нов\w+ главн\w* тренер', r'возглави'],
+        'header': '🚪 <b>ТРЕНЕРСКАЯ ОТСТАВКА / НАЗНАЧЕНИЕ</b>',
+        'title_prefix': '',
+        'lead': '🧠',
+        'rest': '📝',
+        'tags': True,
+    },
+    {
+        'name': 'official_transfer',
+        'patterns': [r'официальн\w*.{0,60}(?:переш|подписа|аренд|трансфер|контракт)',
+                     r'(?:переш|подписа|аренд|трансфер|контракт).{0,80}официальн',
+                     r'объявил\w* о (?:переход|подписани|возвращени)'],
+        'header': '✍️ <b>ОФИЦИАЛЬНО: ТРАНСФЕР</b>',
+        'title_prefix': '',
+        'lead': '🔄',
+        'rest': '💰',
+        'tags': True,
+    },
+    {
+        'name': 'injury',
+        'patterns': [r'травм', r'выбыл\w* на', r'пропустит\w* (?:матч|игр|месяц|недел|сезон|остаток)',
+                     r'разрыв', r'перелом', r'операци'],
+        'header': '🚑 <b>ТРАВМА</b>',
+        'title_prefix': '',
+        'lead': '🩹',
+        'rest': '📝',
+        'tags': True,
+    },
+    {
+        'name': 'disqualification',
+        'patterns': [r'дисквалифи', r'отстранен', r'красн\w* карточк', r'санкци', r'кдк'],
+        'header': '🟥 <b>ДИСКВАЛИФИКАЦИЯ</b>',
+        'title_prefix': '',
+        'lead': '⚖️',
+        'rest': '📝',
+        'tags': True,
+    },
+    {
+        'name': 'match_result',
+        'patterns': [r'\d{1,2}:\d{1,2}(?!\d)', r'обыгра', r'победил', r'разгроми', r'сыграл\w* вничью',
+                     r'уступил', r'одержал\w* победу'],
+        'header': '⚽️ <b>РЕЗУЛЬТАТ</b>',
+        'title_prefix': '',
+        'lead': '📊',
+        'rest': '🎙',
+        'tags': True,
+    },
+]
+
+REGULAR_TEMPLATE = {
+    'name': 'regular',
+    'header': '',
+    'title_prefix': '❗️ ',
+    'lead': '⚽️',
+    'rest': '📝',
+    'tags': True,
+}
+
+_TEMPLATE_PATTERNS = [(t, _compile(t['patterns'])) for t in TEMPLATES]
+
+
+def pick_template(title: str, text: str) -> dict:
+    """Match the title first (most reliable), then the whole text."""
+    for source in (title, text):
+        source = source.replace('ё', 'е').replace('Ё', 'Е')
+        for template, pattern in _TEMPLATE_PATTERNS:
+            if pattern.search(source):
+                return template
+    return REGULAR_TEMPLATE
+
+
+def build_caption(title: str, summary: str, link: str, hashtags: str = '',
+                  template: dict | None = None) -> str:
+    t = template or REGULAR_TEMPLATE
+    header = f"{t['header']}\n\n" if t['header'] else ''
+    head = f"{header}{t['title_prefix']}<b>{html.escape(title[:200])}</b>"
+    tags = f'\n\n{html.escape(hashtags)}' if hashtags and t['tags'] else ''
     tail = tags + FOOTER
 
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', summary) if s.strip()]
     lead = sentences[0] if sentences else ''
     rest = ' '.join(sentences[1:])
 
+    def block(emoji: str, text: str) -> str:
+        return '\n\n' + (f'{emoji} ' if emoji else '') + html.escape(text)
+
     def compose(lead_text: str, rest_text: str) -> str:
         body = ''
         if lead_text:
-            body += '\n\n⚽️ ' + html.escape(lead_text)
+            body += block(t['lead'], lead_text)
         if rest_text:
-            body += '\n\n📝 ' + html.escape(rest_text)
+            body += block(t['rest'], rest_text)
         return head + body + tail
 
     caption = compose(lead, rest)
@@ -226,7 +333,10 @@ async def main() -> None:
                 continue
 
             hashtags = ' '.join(TOPICS[t]['tag'] for t in topics[:3])
-            caption = build_caption(entry.get('title', ''), clean_summary(entry.get('summary', '')), link, hashtags)
+            title = entry.get('title', '')
+            template = pick_template(title, entry_text(entry))
+            print(f"Template: {template['name']} :: {title}")
+            caption = build_caption(title, clean_summary(entry.get('summary', '')), link, hashtags, template)
             try:
                 await send(bot, photo, caption)
             except BadRequest as exc:
