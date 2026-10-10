@@ -112,14 +112,19 @@ def load_seen() -> list[str]:
     if not STATE.exists():
         return []
     try:
-        return json.loads(STATE.read_text(encoding='utf-8'))
+        data = json.loads(STATE.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, OSError) as exc:
-        print('State file broken, starting fresh:', exc)
-        return []
+        raise RuntimeError(f'Cannot read {STATE.name}; refusing to reset publish history') from exc
+    if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+        raise RuntimeError(f'{STATE.name} must contain a JSON list of URL strings')
+    return list(dict.fromkeys(data))
 
 
 def save_seen(seen: list[str]) -> None:
-    STATE.write_text(json.dumps(seen[-STATE_LIMIT:], ensure_ascii=False), encoding='utf-8')
+    # Atomic replacement prevents truncated JSON if the process is interrupted.
+    tmp = STATE.with_suffix(STATE.suffix + '.tmp')
+    tmp.write_text(json.dumps(seen[-STATE_LIMIT:], ensure_ascii=False), encoding='utf-8')
+    tmp.replace(STATE)
 
 
 # ---------------------------------------------------------------------------
