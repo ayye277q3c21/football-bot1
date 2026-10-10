@@ -4,14 +4,11 @@ import html
 import json
 import os
 import re
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import feedparser
 import httpx
 from telegram import Bot
-from telegram.constants import PollType
 from telegram.error import BadRequest, RetryAfter
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -19,14 +16,8 @@ STATE = BASE_DIR / 'published.json'
 FEED = 'https://www.championat.com/rss/news/football/'
 CHANNEL = os.getenv('CHANNEL_USERNAME', '@zafootball_news')
 MAX_PER_RUN = 5
-QUIET_START = 1   # Moscow time, inclusive
-QUIET_END = 8     # Moscow time, exclusive
-DIGEST_HOUR = 22  # Moscow time
-MOSCOW = ZoneInfo('Europe/Moscow')
-SECOND_FEED = os.getenv('SECOND_FEED', 'https://www.sports.ru/rss/news.xml')
 CAPTION_LIMIT = 1024  # Telegram limit for photo captions
 STATE_LIMIT = 3000
-DIGEST_STATE = BASE_DIR / 'digest_date.txt'
 FOOTER = '\n\n<a href="https://t.me/zafootball_news">Футбол за кадром</a>'
 
 # ---------------------------------------------------------------------------
@@ -139,128 +130,22 @@ def clean_summary(raw: str) -> str:
     return ' '.join(text.split())
 
 
-# ---------------------------------------------------------------------------
-# Post templates
-# Checked top to bottom; the first match wins. No match = 'regular'.
-# 'patterns' are regex word beginnings (same rules as topic keywords).
-# 'header' goes above the title, 'lead'/'rest' are emoji before the two text blocks.
-# 'tags' = whether to show topic hashtags.
-# ---------------------------------------------------------------------------
-TEMPLATES: list[dict] = [
-    {
-        'name': 'mourning',
-        'patterns': ['скончал', 'умер', r'смерт', r'погиб', 'траур', 'минутой молчания', 'соболезнован'],
-        'header': '🕯',
-        'title_prefix': '',
-        'lead': '',
-        'rest': '',
-        'tags': False,
-    },
-    {
-        'name': 'breaking',
-        'patterns': ['срочно', 'молния', 'сенсаци', r'экстренн'],
-        'header': '🚨 <b>СРОЧНО</b>',
-        'title_prefix': '',
-        'lead': '⚡️',
-        'rest': '📝',
-        'tags': True,
-    },
-    {
-        'name': 'coach',
-        'patterns': [r'(?:отставк|уволен|уволил|покину|покидает|расторг).{0,60}тренер',
-                     r'тренер.{0,60}(?:отставк|уволен|покину|покидает|расторг)',
-                     r'назначен\w* главн', r'нов\w+ главн\w* тренер', r'возглави'],
-        'header': '🚪 <b>ТРЕНЕРСКАЯ ОТСТАВКА / НАЗНАЧЕНИЕ</b>',
-        'title_prefix': '',
-        'lead': '🧠',
-        'rest': '📝',
-        'tags': True,
-    },
-    {
-        'name': 'official_transfer',
-        'patterns': [r'официальн\w*.{0,60}(?:переш|подписа|аренд|трансфер|контракт)',
-                     r'(?:переш|подписа|аренд|трансфер|контракт).{0,80}официальн',
-                     r'объявил\w* о (?:переход|подписани|возвращени)'],
-        'header': '✍️ <b>ОФИЦИАЛЬНО: ТРАНСФЕР</b>',
-        'title_prefix': '',
-        'lead': '🔄',
-        'rest': '💰',
-        'tags': True,
-    },
-    {
-        'name': 'injury',
-        'patterns': [r'травм', r'выбыл\w* на', r'пропустит\w* (?:матч|игр|месяц|недел|сезон|остаток)',
-                     r'разрыв', r'перелом', r'операци'],
-        'header': '🚑 <b>ТРАВМА</b>',
-        'title_prefix': '',
-        'lead': '🩹',
-        'rest': '📝',
-        'tags': True,
-    },
-    {
-        'name': 'disqualification',
-        'patterns': [r'дисквалифи', r'отстранен', r'красн\w* карточк', r'санкци', r'кдк'],
-        'header': '🟥 <b>ДИСКВАЛИФИКАЦИЯ</b>',
-        'title_prefix': '',
-        'lead': '⚖️',
-        'rest': '📝',
-        'tags': True,
-    },
-    {
-        'name': 'match_result',
-        'patterns': [r'\d{1,2}:\d{1,2}(?!\d)', r'обыгра', r'победил', r'разгроми', r'сыграл\w* вничью',
-                     r'уступил', r'одержал\w* победу'],
-        'header': '⚽️ <b>РЕЗУЛЬТАТ</b>',
-        'title_prefix': '',
-        'lead': '📊',
-        'rest': '🎙',
-        'tags': True,
-    },
-]
-
-REGULAR_TEMPLATE = {
-    'name': 'regular',
-    'header': '',
-    'title_prefix': '❗️ ',
-    'lead': '⚽️',
-    'rest': '📝',
-    'tags': True,
-}
-
-_TEMPLATE_PATTERNS = [(t, _compile(t['patterns'])) for t in TEMPLATES]
-
-
-def pick_template(title: str, text: str) -> dict:
-    """Match the title first (most reliable), then the whole text."""
-    for source in (title, text):
-        source = source.replace('ё', 'е').replace('Ё', 'Е')
-        for template, pattern in _TEMPLATE_PATTERNS:
-            if pattern.search(source):
-                return template
-    return REGULAR_TEMPLATE
-
-
-def build_caption(title: str, summary: str, link: str, hashtags: str = '',
-                  template: dict | None = None) -> str:
-    t = template or REGULAR_TEMPLATE
-    header = f"{t['header']}\n\n" if t['header'] else ''
-    head = f"{header}{t['title_prefix']}<b>{html.escape(title[:200])}</b>"
-    tags = f'\n\n{html.escape(hashtags)}' if hashtags and t['tags'] else ''
-    tail = tags + FOOTER
+def build_caption(title: str, summary: str, link: str, hashtags: str = '') -> str:
+    head = f'❗️ <b>{html.escape(title[:200])}</b>'
+    tags = f'\n\n{html.escape(hashtags)}' if hashtags else ''
+    source = f'\n\n<a href="{html.escape(link, quote=True)}">Источник</a>'
+    tail = tags + source + FOOTER
 
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', summary) if s.strip()]
     lead = sentences[0] if sentences else ''
     rest = ' '.join(sentences[1:])
 
-    def block(emoji: str, text: str) -> str:
-        return '\n\n' + (f'{emoji} ' if emoji else '') + html.escape(text)
-
     def compose(lead_text: str, rest_text: str) -> str:
         body = ''
         if lead_text:
-            body += block(t['lead'], lead_text)
+            body += '\n\n⚽️ ' + html.escape(lead_text)
         if rest_text:
-            body += block(t['rest'], rest_text)
+            body += '\n\n📝 ' + html.escape(rest_text)
         return head + body + tail
 
     caption = compose(lead, rest)
@@ -291,71 +176,6 @@ def entry_text(entry) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Timing, digest, polls
-# ---------------------------------------------------------------------------
-def now_moscow() -> datetime:
-    return datetime.now(MOSCOW)
-
-
-def is_quiet_time(now: datetime) -> bool:
-    return QUIET_START <= now.hour < QUIET_END
-
-
-def digest_already_sent(day: str) -> bool:
-    try:
-        return DIGEST_STATE.read_text(encoding='utf-8').strip() == day
-    except OSError:
-        return False
-
-
-def mark_digest_sent(day: str) -> None:
-    DIGEST_STATE.write_text(day, encoding='utf-8')
-
-
-def dedupe_key(title: str) -> str:
-    return re.sub(r'[^a-zа-я0-9]+', '', title.lower().replace('ё', 'е'))
-
-
-def is_match_result(title: str) -> bool:
-    return bool(re.search(r'\d{1,2}:\d{1,2}|обыгра|победил|разгроми|сыграл\w* вничью|уступил', title, re.I))
-
-
-async def send_daily_digest(bot: Bot, entries: list) -> bool:
-    now = now_moscow()
-    day = now.date().isoformat()
-    if now.hour != DIGEST_HOUR or digest_already_sent(day):
-        return False
-    candidates = []
-    for entry in entries:
-        title = entry.get('title', '')
-        if match_topics(entry_text(entry)) and title and not is_match_result(title):
-            candidates.append(title)
-        if len(candidates) >= 5:
-            break
-    if not candidates:
-        mark_digest_sent(day)
-        return False
-    text = '🗞 <b>ГЛАВНОЕ ЗА ДЕНЬ</b>\n\n' + '\n'.join(f'• {html.escape(t[:180])}' for t in candidates)
-    text += '\n\n<a href="https://t.me/zafootball_news">Футбол за кадром</a>'
-    await bot.send_message(CHANNEL, text, parse_mode='HTML', disable_notification=True)
-    mark_digest_sent(day)
-    print('Daily digest sent:', len(candidates))
-    return True
-
-
-async def send_result_poll(bot: Bot, title: str) -> None:
-    # One lightweight engagement poll per run, only for actual-looking results.
-    await bot.send_poll(
-        CHANNEL,
-        question='Как вам результат матча?',
-        options=['Ожидаемо', 'Сенсация', 'Не смотрел(а)'],
-        is_anonymous=True,
-        allows_multiple_answers=False,
-    )
-    print('Poll sent for:', title)
-
-
-# ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
 async def send(bot: Bot, photo: str, caption: str) -> None:
@@ -378,36 +198,16 @@ async def main() -> None:
         save_seen(seen)
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        feeds = [FEED]
-        if SECOND_FEED and SECOND_FEED != FEED:
-            feeds.append(SECOND_FEED)
-        entries = []
-        seen_titles = set()
-        for feed_url in feeds:
-            try:
-                response = await client.get(feed_url)
-                response.raise_for_status()
-                for entry in feedparser.parse(response.content).entries:
-                    key = dedupe_key(entry.get('title', ''))
-                    if key and key not in seen_titles:
-                        seen_titles.add(key)
-                        entries.append(entry)
-            except Exception as exc:
-                print(f'Feed unavailable: {feed_url} :: {type(exc).__name__}: {exc}')
+        response = await client.get(FEED)
+        response.raise_for_status()
+    entries = feedparser.parse(response.content).entries
 
-    # RSS feeds are newest-first; post oldest-first so the channel reads chronologically.
-    entries.sort(key=lambda e: e.get('published_parsed') or e.get('updated_parsed') or (), reverse=False)
-    fresh = [e for e in entries if e.get('link') and e.get('link') not in seen_set]
+    # RSS is newest-first; post oldest-first so the channel reads chronologically.
+    fresh = [e for e in reversed(entries) if e.get('link') and e.get('link') not in seen_set]
     sent = filtered = 0
-    now = now_moscow()
     print('Enabled topics:', ', '.join(TOPIC_PATTERNS) or 'none')
-    print('Moscow time:', now.isoformat())
 
     async with Bot(os.environ['BOT_TOKEN']) as bot:
-        await send_daily_digest(bot, entries)
-        if is_quiet_time(now):
-            print(f'Quiet hours {QUIET_START:02d}:00-{QUIET_END:02d}:00 MSK, no posts')
-            return
         for entry in fresh:
             if sent >= MAX_PER_RUN:
                 break
@@ -427,10 +227,7 @@ async def main() -> None:
                 continue
 
             hashtags = ' '.join(TOPICS[t]['tag'] for t in topics[:3])
-            title = entry.get('title', '')
-            template = pick_template(title, entry_text(entry))
-            print(f"Template: {template['name']} :: {title}")
-            caption = build_caption(title, clean_summary(entry.get('summary', '')), link, hashtags, template)
+            caption = build_caption(entry.get('title', ''), clean_summary(entry.get('summary', '')), link, hashtags)
             try:
                 await send(bot, photo, caption)
             except BadRequest as exc:
@@ -445,11 +242,6 @@ async def main() -> None:
 
             mark(link)
             sent += 1
-            if sent == 1 and is_match_result(title):
-                try:
-                    await send_result_poll(bot, title)
-                except Exception as exc:
-                    print(f'Poll skipped: {type(exc).__name__}: {exc}')
             await asyncio.sleep(1)
 
     print(f'Published: {sent}, filtered out: {filtered}')
