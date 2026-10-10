@@ -66,7 +66,7 @@ jobs:
           merged = list(dict.fromkeys(remote + local))[-3000:]
           Path(os.environ["MERGED_STATE"]).write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
           PY
-            git checkout -B main origin/main
+            git checkout -f -B main origin/main
             cp "$RUNNER_TEMP/published-merged.json" published.json
             git add published.json
             if git diff --cached --quiet; then
