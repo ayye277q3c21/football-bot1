@@ -35,15 +35,52 @@
           ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
         выполнить: python publish_once.py
 
-      - имя: Сохранить состояние
+      - имя: Безопасное сохранение состояния
         если: всегда()
+        оболочка: bash
         выполнить: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          [ -f published.json ] || exit 0
-          git fetch origin
-          git checkout "${GITHUB_REF_NAME}"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
+
+          # Сохраните состояние, полученное в результате этого запуска, а затем объедините его с последним удаленным состоянием.
+          cp published.json /tmp/local-published.json 2>/dev/null || echo '[]' > /tmp/local-published.json
+          git fetch origin main
+          git checkout -B main origin/main
+          git show origin/main:published.json > /tmp/remote-published.json 2>/dev/null || echo '[]' > /tmp/remote-published.json
+
+          python - <<'PY'
+          импорт json
+          from pathlib import Path
+          def read(path):
+              пытаться:
+                  value = json.loads(Path(path).read_text())
+                  возвращаем значение, если isinstance(value, list) иначе []
+              за исключением исключения:
+                  возвращаться []
+          merged = list(dict.fromkeys(read('/tmp/remote-published.json') + read('/tmp/local-published.json')))
+          Path('published.json').write_text(json.dumps(merged[-3000:], ensure_ascii=False), encoding='utf-8')
+          PY
+
           git add published.json
-          git diff --cached --quiet || git commit -m "Update published.json [skip ci]"
-          git push origin "${GITHUB_REF_NAME}"
+          if git diff --cached --quiet; then
+            echo 'Никаких изменений в состоянии дел'
+          еще
+            git commit -m "Обновить published.json [пропустить ci]"
+            git push origin HEAD:main
+          фи
+
+  оповещение при сбое:
+    если: failure()
+    потребности: опубликовать
+    runs-on: ubuntu-latest
+    шаги:
+      - использует: actions/checkout@v4
+      - использует: actions/setup-python@v5
+        с:
+          python-version: '3.12'
+      - имя: Отправить оповещение в Telegram
+        окружающая среда:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
+        выполнить: python notify_failure.py
