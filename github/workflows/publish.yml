@@ -1,61 +1,49 @@
-name: Publish football news
+Название: Публиковать футбольные новости
 
-on:
-  schedule:
-    - cron: '*/30 * * * *'   # every 30 min (UTC)
+на:
+  расписание:
+    - cron: '*/30 * * * *' # каждые 30 мин (UTC)
   workflow_dispatch:
 
-permissions:
-  contents: write   # needed to commit published.json back
+разрешения:
+  содержимое: написать
 
-concurrency:
-  group: publish
+параллельное выполнение:
+  группа: публикация
   cancel-in-progress: false
 
-jobs:
-  publish:
+вакансии:
+  публиковать:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    шаги:
+      - использует: actions/checkout@v4
+        с:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
+      - использует: actions/setup-python@v5
+        с:
           python-version: '3.12'
-          cache: pip
+          кэш: pip
 
-      - run: pip install -r requirements.txt
+      - выполнить: pip install -r requirements.txt
 
-      - name: Publish
-        env:
+      - имя: Опубликовать
+        окружающая среда:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_USERNAME: '@zafootball_news'
           SECOND_FEED: 'https://www.sports.ru/rss/news.xml'
           ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
-          # TOPICS: 'rpl,epl,laliga,seriea,bundesliga,ligue1,eurocups,national,transfers,stars'
-        run: python publish_once.py
+        выполнить: python publish_once.py
 
-      - name: Save state
-        if: always()
-        run: |
+      - имя: Сохранить состояние
+        если: всегда()
+        выполнить: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           [ -f published.json ] || exit 0
+          git fetch origin
+          git checkout "${GITHUB_REF_NAME}"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git add published.json
           git diff --cached --quiet || git commit -m "Update published.json [skip ci]"
-          git pull --rebase --autostash || true
-          git push
-
-  alert-on-failure:
-    if: failure()
-    needs: publish
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Send Telegram alert
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
-        run: python notify_failure.py
+          git push origin "${GITHUB_REF_NAME}"
