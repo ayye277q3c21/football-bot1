@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: publish
@@ -15,6 +16,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,6 +33,10 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_USERNAME: '@zafootball_news'
+          FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
+          # TIMEZONE: 'Europe/Moscow'
+          # QUIET_START: '0'
+          # QUIET_END: '8'
           # TOPICS: 'rpl,epl,laliga,seriea,bundesliga,ligue1,eurocups,national,transfers,stars'
         run: python publish_once.py
 
@@ -54,7 +60,7 @@ jobs:
 
           local = json.loads(Path(os.environ["LOCAL_STATE"]).read_text(encoding="utf-8"))
           if not isinstance(local, list) or not all(isinstance(x, str) for x in local):
-              raise SystemExit("Local published.json is not a JSON list of URL strings")
+              raise SystemExit("Local published.json is not a JSON list of strings")
           try:
               raw = subprocess.check_output(["git", "show", "origin/main:published.json"], text=True)
           except subprocess.CalledProcessError:
@@ -62,7 +68,7 @@ jobs:
           else:
               remote = json.loads(raw)
               if not isinstance(remote, list) or not all(isinstance(x, str) for x in remote):
-                  raise SystemExit("Remote published.json is not a JSON list of URL strings")
+                  raise SystemExit("Remote published.json is not a JSON list of strings")
           merged = list(dict.fromkeys(remote + local))[-3000:]
           Path(os.environ["MERGED_STATE"]).write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
           PY
@@ -82,3 +88,28 @@ jobs:
           done
           echo "Could not save publish history after 3 attempts" >&2
           exit 1
+
+      # Telegram alert to your private chat. Sent once per failure streak, not every 30 minutes.
+      - name: Notify about failure
+        if: failure()
+        shell: bash
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${ADMIN_CHAT_ID:-}" ]; then
+            echo "ADMIN_CHAT_ID secret is not set, skipping the alert"
+            exit 0
+          fi
+          prev=$(gh run list --workflow "${{ github.workflow }}" --status completed --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || true)
+          if [ "$prev" = "failure" ]; then
+            echo "The previous run failed too, the alert was already sent"
+            exit 0
+          fi
+          curl -sS -m 20 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${ADMIN_CHAT_ID}" \
+            --data-urlencode "text=⚠️ Бот новостей упал. Лог: ${RUN_URL}" \
+            -o /dev/null || echo "Could not send the alert"
