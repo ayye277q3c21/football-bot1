@@ -1,0 +1,84 @@
+name: Publish football news
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Publish
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_USERNAME: '@zafootball_news'
+          # TOPICS: 'rpl,epl,laliga,seriea,bundesliga,ligue1,eurocups,national,transfers,stars'
+        run: python publish_once.py
+
+      - name: Save publish history
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f published.json ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp published.json "$RUNNER_TEMP/published-local.json"
+
+          for attempt in 1 2 3; do
+            git fetch origin main
+            LOCAL_STATE="$RUNNER_TEMP/published-local.json" MERGED_STATE="$RUNNER_TEMP/published-merged.json" python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          local = json.loads(Path(os.environ["LOCAL_STATE"]).read_text(encoding="utf-8"))
+          if not isinstance(local, list) or not all(isinstance(x, str) for x in local):
+              raise SystemExit("Local published.json is not a JSON list of URL strings")
+          try:
+              raw = subprocess.check_output(["git", "show", "origin/main:published.json"], text=True)
+          except subprocess.CalledProcessError:
+              remote = []
+          else:
+              remote = json.loads(raw)
+              if not isinstance(remote, list) or not all(isinstance(x, str) for x in remote):
+                  raise SystemExit("Remote published.json is not a JSON list of URL strings")
+          merged = list(dict.fromkeys(remote + local))[-3000:]
+          Path(os.environ["MERGED_STATE"]).write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+          PY
+            git checkout -B main origin/main
+            cp "$RUNNER_TEMP/published-merged.json" published.json
+            git add published.json
+            if git diff --cached --quiet; then
+              echo "Publish history is already up to date"
+              exit 0
+            fi
+            git commit -m "Update published.json [skip ci]"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            cp published.json "$RUNNER_TEMP/published-local.json"
+            echo "Push raced with another main update; retrying ($attempt/3)"
+          done
+          echo "Could not save publish history after 3 attempts" >&2
+          exit 1
